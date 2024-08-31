@@ -1,14 +1,23 @@
 import * as THREE from 'three'
 // @ts-ignore
 import { MapControls } from 'three/addons/controls/MapControls.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js'
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
 import {InitializationData, SimulationData, VisualizationCommand} from "./data";
+import { initializeInteraction } from './interaction';
+
+interface Node {
+    mesh: THREE.Mesh;
+    text: TextGeometry;
+}
 
 let nodes: string[] = [];
-let vehicles: Record<string, THREE.Mesh> = {};
+let vehicles: Record<string, Node> = {};
 let scene: THREE.Scene = null;
 let renderer: THREE.Renderer = null;
 let camera: THREE.PerspectiveCamera = null;
-
+let font = null;
+let nodeSize = 0.1;
 let resizeEvent: () => void = null;
 
 const statusElement = document.getElementById("status") as HTMLPreElement;
@@ -16,6 +25,8 @@ const trackedElement = document.getElementById("tracked") as HTMLPreElement;
 const colorForm = document.getElementById("color-form") as HTMLFormElement;
 const environmentForm = document.getElementById("environment-form") as HTMLFormElement;
 const nodeSelectElement= document.getElementById("nodes") as HTMLSelectElement;
+const showIdForm = document.getElementById("showId") as HTMLFormElement;
+const nodeCheckboxTableElement = document.getElementById("nodes-checkbox") as HTMLTableElement
 
 
 colorForm.addEventListener("submit", (e) => {
@@ -26,7 +37,7 @@ colorForm.addEventListener("submit", (e) => {
     const nodes = formData.getAll("nodes").map(n => n as string)
 
     for (const node of nodes) {
-        vehicles[node].material = new THREE.MeshBasicMaterial({ color: color });
+        vehicles[node].mesh.material = new THREE.MeshBasicMaterial({ color: color });
 
         localStorage.setItem(`${node}-color`, color)
     }
@@ -37,22 +48,45 @@ environmentForm.addEventListener("submit", (e) => {
 
     const formData = new FormData(environmentForm);
     const bgColor = formData.get("background-color") as string
-    const nodeSize = parseFloat(formData.get("node-size") as string)
+    nodeSize = parseFloat(formData.get("node-size") as string)
 
     scene.background = new THREE.Color(bgColor)
     
-    for (const vehicle of Object.values(vehicles)) {
-        vehicle.geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
+    for (const node of Object.keys(vehicles)) {
+        const vehicle = vehicles[node];
+        vehicle.mesh.geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
+        if (vehicle.text != null) {
+            vehicle.text.geometry = new TextGeometry(node, {font: font, size: nodeSize * 2, height:1, depth: 0.5});
+        }
     }
 
     localStorage.setItem("environment-background-color", bgColor)
     localStorage.setItem("environment-node-size", nodeSize.toString())
 })
 
+showIdForm.addEventListener("submit", (e) => {
+    e.preventDefault()
+
+    const formData = new FormData(showIdForm)
+    const checkedNodes = formData.getAll("nodes-checkbox").map(n => n as string);
+
+    nodes.forEach(node => {
+        scene.remove(vehicles[node].text)
+        vehicles[node].text = null
+        localStorage.setItem(`${node}-show`, 'false')
+    })
+
+    checkedNodes.forEach(node => {
+        vehicles[node].text = getTextObject(node)
+        scene.add(vehicles[node].text)
+        localStorage.setItem(`${node}-show`, 'true')
+    })
+})
+
 function loadStoredConfigs() {
     const bgColor = localStorage.getItem("environment-background-color")
     const nodeSizeStored = localStorage.getItem("environment-node-size")
-    const nodeSize = nodeSizeStored !== null ? parseFloat(nodeSizeStored) : null
+    nodeSize = nodeSizeStored !== null ? parseFloat(nodeSizeStored) : null
 
     if (bgColor !== null) {
         scene.background = new THREE.Color(bgColor)
@@ -60,18 +94,54 @@ function loadStoredConfigs() {
 
     for(const node of nodes) {
         const color = localStorage.getItem(`${node}-color`)
+        const show = localStorage.getItem(`${node}-show`)
         if (color != null) {
-            vehicles[node].material = new THREE.MeshBasicMaterial({ color: color });
+            vehicles[node].mesh.material = new THREE.MeshBasicMaterial({ color: color });
 
         }
         if (nodeSize != null) {
-            vehicles[node].geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
+            vehicles[node].mesh.geometry = new THREE.SphereGeometry(nodeSize, 32, 32);
+        }
+        if (show != null && show == 'true') {
+                vehicles[node].text = getTextObject(node)
+                scene.add(vehicles[node].text)
         }
     }
 }
 
+function getTableRowElement(node: string) {
+    const tr = document.createElement('tr');
+    const name_th = document.createElement('td');
+    const check_th = document.createElement('td');
+    const check = document.createElement('input');
+    
+    tr.id = node;
+    name_th.textContent = node;
+    check.checked = false;
+    check.value = node;
+    check.type = 'checkbox';
+    check.name = 'nodes-checkbox';
+    check.id = 'show-check'
+    check_th.id = "check";
+    check_th.appendChild(check);
+    tr.appendChild(name_th);
+    tr.appendChild(check_th);
 
-export function initializeVisualization(data: InitializationData) {
+    return tr;
+}
+
+function getTextObject(node: string) {
+    if (vehicles[node].text) {
+        scene.remove(vehicles[node].text)
+        vehicles[node].text = null;
+    }
+    return new THREE.Mesh(
+        new TextGeometry(node, {font: font, size: nodeSize * 2, height:1, depth: 0.5}),
+        new THREE.MeshBasicMaterial({ color: 'rgb(0, 0, 0)'})
+    );
+}
+
+function initializeVisualization(data: InitializationData) {
     nodes = data.nodes;
 
     // Set up the scene
@@ -120,19 +190,24 @@ export function initializeVisualization(data: InitializationData) {
     // Create vehicles on the ground
     const vehicleGeometry = new THREE.SphereGeometry(0.1, 32, 32);
     const vehicleMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
-
+    console.log(`Iterating through node-list`)
     for (const node of data.nodes) {
-        const vehicle = new THREE.Mesh(vehicleGeometry, vehicleMaterial);
-        vehicle.position.x = 0; // Random x position on the ground
-        vehicle.position.y = 0; // Height above the ground
-        vehicle.position.z = 0; // Random z position on the ground
-        scene.add(vehicle);
-        vehicles[node] = vehicle;
+        const vehicleMesh = new THREE.Mesh(vehicleGeometry, vehicleMaterial);
+        vehicleMesh.position.x = 0; // Random x position on the ground
+        vehicleMesh.position.y = 0; // Height above the ground
+        vehicleMesh.position.z = 0; // Random z position on the ground
+        scene.add(vehicleMesh);
+        vehicles[node] = {
+            mesh: vehicleMesh,
+            text: null
+        };
 
         const selectOption = document.createElement("option")
         selectOption.value = node
         selectOption.innerText = node
         nodeSelectElement.appendChild(selectOption)
+        console.log(`Adding to table: ${node}`)
+        nodeCheckboxTableElement.appendChild(getTableRowElement(node));
     }
 
     loadStoredConfigs()
@@ -175,7 +250,6 @@ function formatTime(time: number) {
     return `${formattedMinutes}:${formattedSeconds}:${milliseconds}`
 }
 
-
 export function update(data: SimulationData) {
     if (scene == null) {
         return
@@ -184,9 +258,16 @@ export function update(data: SimulationData) {
     // Update the vehicle positions
     nodes.forEach((node, i) => {
         const pos = data.positions[i];
-        vehicles[node].position.x = pos[0];
-        vehicles[node].position.y = pos[2];
-        vehicles[node].position.z = pos[1];
+        vehicles[node].mesh.position.x = pos[0];
+        vehicles[node].mesh.position.y = pos[2];
+        vehicles[node].mesh.position.z = pos[1];
+
+        if (vehicles[node].text != null) {
+            vehicles[node].text.position.x = pos[0] - 5;
+            vehicles[node].text.position.y = pos[2] + (nodeSize * 5);
+            vehicles[node].text.position.z = pos[1] + 5;
+            vehicles[node].text.lookAt( camera.position )
+        }
     })
 
     let trackedVariableStrings = "------------------------\n"
@@ -211,14 +292,20 @@ export function executeCommand(command: VisualizationCommand) {
         const {node_id, color} = command.payload;
         const node = nodes[node_id];
         const rgbColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`
-        vehicles[node].material = new THREE.MeshBasicMaterial({ color: rgbColor });
+        vehicles[node].mesh.material = new THREE.MeshBasicMaterial({ color: rgbColor });
+    } else if (command.command === "show_node_id") {
+        const {node_id, show} = command.payload;
+        const node = nodes[node_id];
+        vehicles[node].text = show? getTextObject(node) : null;
+        vehicles[node].text.lookAt( camera.position );
+        scene.add(vehicles[node].text);
     } else if (command.command === "paint_environment") {
         const {color} = command.payload;
         scene.background = new THREE.Color(...color)
     } else if (command.command === "resize_nodes") {
         const {size} = command.payload;
         for (const vehicle of Object.values(vehicles)) {
-            vehicle.geometry = new THREE.SphereGeometry(size, 32, 32);
+            vehicle.mesh.geometry = new THREE.SphereGeometry(size, 32, 32);
         }
     }
 }
@@ -242,12 +329,27 @@ export function finalizeVisualization() {
     }
 
     nodeSelectElement.innerHTML = ""
+    nodeCheckboxTableElement.innerHTML = "<tr><th>NodeID</th><th>Show</th></tr>"
 
     nodes = [];
 
     renderer = null
     camera = null
     scene = null
+}
+
+// This function is responsible for loading resources before the visualization start. This is the entry-point for the simulation.
+export function initializeThree(data: InitializationData) {
+    const manager = new THREE.LoadingManager();
+    manager.onLoad = () => {
+        initializeVisualization(data)
+        initializeInteraction()
+    }
+
+    const loader = new FontLoader(manager)
+    loader.load('node_modules/three/examples/fonts/helvetiker_regular.typeface.json', function (f) {
+        font = f;
+    });
 }
 
 export function configureInteractions() {
